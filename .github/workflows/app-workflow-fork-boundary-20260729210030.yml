@@ -1,0 +1,13 @@
+name: Cross-account App Workflows boundary 20260729210030
+on:
+  push:
+    branches:
+      - "appwf-*"
+      - main
+permissions:
+  contents: read
+jobs:
+  harmless:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo owned-harmless-cross-account-20260729210030
