@@ -1,0 +1,12 @@
+name: Native token cross-fork provenance 20260729212045
+
+on:
+  push:
+
+permissions: {}
+
+jobs:
+  harmless:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo owned-cross-fork-provenance-20260729212045
