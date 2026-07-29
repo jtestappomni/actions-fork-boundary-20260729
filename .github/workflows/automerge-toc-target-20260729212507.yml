@@ -1,0 +1,16 @@
+name: Auto-merge TOCTOU harmless canary 20260729212507
+
+on:
+  push:
+    branches:
+      - automerge-toc-base-20260729212507
+
+permissions:
+  contents: read
+
+jobs:
+  harmless:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Harmless owned canary
+        run: echo owned-harmless-automerge-toc-20260729212507
